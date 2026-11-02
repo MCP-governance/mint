@@ -1,0 +1,315 @@
+"""Operational containment and isolated checks against the loaded policy."""
+import asyncio
+import copy
+import json
+import logging
+import os
+import uuid
+from pathlib import Path
+
+import httpx
+from psycopg.types.json import Jsonb
+
+from . import db, local_jobs, release, review
+from .alert_store import emit_alert
+from .contract import POLICY_RESULT, canonical_hash
+from .selective import restricted_tools
+
+INTERVAL = int(os.getenv("OPS_RESPONSE_INTERVAL_SECONDS", "5"))
+REPEAT = int(os.getenv("OPS_AUTO_STOP_REPEAT", "3"))
+WINDOW = int(os.getenv("OPS_AUTO_STOP_WINDOW_SECONDS", "300"))
+SOURCES = {s.strip() for s in os.getenv("OPS_AUTO_STOP_SOURCES", "drift,anomaly,volume").split(",") if s.strip()}
+SERVERS = {s.strip() for s in os.getenv("OPS_AUTO_STOP_SERVERS", "*").split(",") if s.strip()}
+if min(INTERVAL, REPEAT, WINDOW) <= 0 or SOURCES - {"drift", "anomaly", "volume"}:
+    raise ValueError("Invalid operational response settings")
+LOG = logging.getLogger(__name__)
+
+
+def alert_kind(policy_id):
+    if policy_id == "MCP-REGISTRY-001":
+        return "unapproved-connection"
+    if policy_id.startswith("MCP-SHADOW-"):
+        return "unapproved-connection"
+    if policy_id.startswith(("P-ANOMALY-", "P-VOLUME-")):
+        return "call-burst"
+    return None
+
+
+async def catalog_alerts(server_id, findings, snapshot_id, synthetic=False):
+    added = sorted({name for f in findings if f.get("type") == "tool-set-drift" for name in f.get("added", [])})
+    if added:
+        return await emit_alert("new-tool", "catalog", snapshot_id, {"server_id": server_id, "added": added}, synthetic)
+
+
+async def observed_alerts():
+    rows = await db.fetch_all(
+        """SELECT d.id,d.server_id,d.policy_id,d.conflicts,d.user_token FROM decisions d
+           WHERE d.created_at>now()-interval '1 day'
+             AND (d.policy_id='MCP-REGISTRY-001' OR d.policy_id LIKE 'MCP-SHADOW-%%'
+                  OR d.policy_id LIKE 'P-ANOMALY-%%' OR d.policy_id LIKE 'P-VOLUME-%%')
+             AND NOT EXISTS (SELECT 1 FROM ops_alerts a WHERE a.origin='decision' AND a.origin_id=d.id::text AND NOT a.synthetic)
+             -- A shadow MCP on the caller's PC marks every call of that person; one alert a day per person says it.
+             AND NOT (d.policy_id LIKE 'MCP-SHADOW-%%' AND EXISTS (
+                  SELECT 1 FROM ops_alerts a WHERE a.kind='unapproved-connection' AND a.evidence->>'policy_id'=d.policy_id
+                     AND a.evidence->>'user_token'=d.user_token AND a.created_at>now()-interval '1 day' AND NOT a.synthetic))
+           ORDER BY d.id LIMIT 1000""")
+    seen = set()
+    for row in rows:
+        kind = alert_kind(row["policy_id"])
+        if not kind:
+            continue
+        shadow = row["policy_id"].startswith("MCP-SHADOW-")
+        if shadow and (row["user_token"], row["policy_id"]) in seen:
+            continue
+        seen.add((row["user_token"], row["policy_id"]))
+        await emit_alert(kind, "decision", row["id"], {"server_id": row["server_id"], "policy_id": row["policy_id"],
+                                                       **({"user_token": row["user_token"]} if shadow else {})})
+
+
+async def endpoint_alerts():
+    """엔드포인트가 보고한 미등록 MCP(설정·확인된 수신기)를 호출 판정과 별개로 경보로 남긴다."""
+    rows = await db.fetch_all(
+        """SELECT 'endpoint-inventory' AS origin, i.id, i.endpoint_id, a.hostname, i.server_label AS label,
+                  i.transport AS channel, i.config_path AS place
+             FROM endpoint_inventory i JOIN endpoint_agents a USING (endpoint_id)
+            WHERE i.classification='shadow' AND i.reported_at>now()-interval '1 day'
+              AND NOT EXISTS (SELECT 1 FROM ops_alerts x WHERE x.kind='unapproved-endpoint-mcp'
+                              AND x.origin='endpoint-inventory' AND x.origin_id=i.id::text AND NOT x.synthetic)
+           UNION ALL
+           SELECT 'endpoint-listener', l.id, l.endpoint_id, a.hostname, coalesce(l.server_name,l.process_name,l.address),
+                  l.source, l.address || coalesce(':' || l.port, '')
+             FROM endpoint_listeners l JOIN endpoint_agents a USING (endpoint_id)
+            WHERE l.classification='shadow' AND l.mcp_evidence='confirmed' AND l.observed_at>now()-interval '1 day'
+              AND NOT EXISTS (SELECT 1 FROM ops_alerts x WHERE x.kind='unapproved-endpoint-mcp'
+                              AND x.origin='endpoint-listener' AND x.origin_id=l.id::text AND NOT x.synthetic)
+           UNION ALL
+           SELECT DISTINCT ON (t.endpoint_id, t.server) 'endpoint-tool', t.id, t.endpoint_id, a.hostname, t.server,
+                  t.harness, t.tool
+             FROM endpoint_tool_events t JOIN endpoint_agents a USING (endpoint_id)
+            WHERE t.path='local' AND t.called_at>now()-interval '1 day'
+              AND NOT EXISTS (SELECT 1 FROM ops_alerts x WHERE x.kind='unapproved-endpoint-mcp' AND x.origin='endpoint-tool'
+                              AND x.evidence->>'endpoint_id'=t.endpoint_id AND x.evidence->>'label'=t.server AND NOT x.synthetic)
+           ORDER BY 2 LIMIT 1000""")
+    for row in rows:
+        await emit_alert("unapproved-endpoint-mcp", row["origin"], row["id"],
+                         {"endpoint_id": row["endpoint_id"], "hostname": row["hostname"], "label": row["label"],
+                          "channel": row["channel"], "place": row["place"], "policy_id": "MCP-SHADOW-001"})
+    # A PC the Gateway quarantined (managed files changed, a check failed) is cut off from every approved server;
+    # an administrator who is not told keeps wondering why the employee cannot work. One alert per transition.
+    quarantined = await db.fetch_all(
+        """SELECT e.id, e.endpoint_id, a.hostname, e.detail
+             FROM (SELECT id, endpoint_id, kind, detail, observed_at,
+                          lag(kind) OVER (PARTITION BY endpoint_id ORDER BY id) AS previous
+                     FROM endpoint_managed_events) e JOIN endpoint_agents a USING (endpoint_id)
+            WHERE e.kind='quarantined' AND e.previous IS DISTINCT FROM 'quarantined' AND e.observed_at>now()-interval '1 day'
+              AND NOT EXISTS (SELECT 1 FROM ops_alerts x WHERE x.kind='endpoint-quarantined' AND x.origin='endpoint-managed'
+                              AND x.origin_id=e.id::text AND NOT x.synthetic)
+            ORDER BY e.id LIMIT 200""")
+    for row in quarantined:
+        detail = row["detail"] or {}
+        failed = sorted(name for name, ok in (detail.get("checks") or {}).items() if ok is not True)
+        await emit_alert("endpoint-quarantined", "endpoint-managed", row["id"],
+                         {"endpoint_id": row["endpoint_id"], "hostname": row["hostname"],
+                          "files": detail.get("mismatched_files") or [], "checks": failed})
+
+
+def selected(server_id, source):
+    return source in SOURCES and ("*" in SERVERS or server_id in SERVERS)
+
+
+async def suspend(server_id, source, reason, evidence, batch=None):
+    existing = await db.fetch_one(
+        """SELECT s.status, EXISTS(SELECT 1 FROM ops_suspensions x
+               WHERE x.server_id=s.id AND x.resumed_at IS NULL) AS suspended
+             FROM mcp_servers s WHERE s.id=%s""", (server_id,))
+    if not existing:
+        raise LookupError("등록되지 않은 서버입니다.")
+    if existing["suspended"] or existing["status"] in ("DISABLED", "BLOCKED_SUPPLY_CHAIN"):
+        return False
+    local_runner = globals().get("local_jobs")
+    if local_runner is not None:
+        await local_runner.quiesce(server_id=server_id)
+    async with db.transaction() as connection:
+        server = await (await connection.execute(
+            "SELECT status FROM mcp_servers WHERE id=%s FOR UPDATE", (server_id,))).fetchone()
+        if not server or server["status"] in ("DISABLED", "BLOCKED_SUPPLY_CHAIN"):
+            return False
+        row = await (await connection.execute(
+            """INSERT INTO ops_suspensions(server_id,source,reason,evidence) VALUES (%s,%s,%s,%s)
+               ON CONFLICT (server_id) WHERE resumed_at IS NULL DO NOTHING RETURNING id""",
+            (server_id, source, reason, Jsonb(evidence)))).fetchone()
+        if not row:
+            return False
+        await connection.execute(
+            "UPDATE mcp_servers SET status='DISABLED',status_reason=%s WHERE id=%s", (reason, server_id))
+
+        scope = {"source": source, **evidence}
+        if batch:
+            scope["batch"] = batch
+        await connection.execute(
+            """INSERT INTO approval_events(kind,outcome,target_kind,target_id,actor,reason,scope)
+               VALUES ('automatic-suspension','held','server',%s,'system',%s,%s)""",
+            (server_id, reason, Jsonb(scope)))
+        from . import litellm_sync
+        await litellm_sync.enqueue(server_id, connection)
+    return True
+
+
+async def contain_drift(server_id, findings):
+    if restricted_tools(findings) is None and selected(server_id, "drift"):
+        await suspend(server_id, "drift", "미승인 계약 변경으로 자동 중지", {"findings": findings})
+
+
+async def contain_repeated():
+    # Synthetic events use other tables; a caller's client fields cannot opt out of containment.
+    rows = await db.fetch_all(
+        """WITH signals AS (
+             SELECT d.id,d.server_id,d.created_at,p.policy_id FROM decisions d
+             JOIN mcp_servers s ON s.id=d.server_id
+             CROSS JOIN LATERAL (
+               SELECT d.policy_id UNION SELECT d.would_policy_id
+               UNION SELECT c->>'policy_id' FROM jsonb_array_elements(COALESCE(d.conflicts,'[]')) c
+             ) p
+             WHERE d.created_at > now()-make_interval(secs => %s)
+               AND d.created_at > COALESCE((SELECT max(resumed_at) FROM ops_suspensions s
+                                           WHERE s.server_id=d.server_id),'-infinity'::timestamptz)
+           ) SELECT server_id,CASE WHEN policy_id LIKE 'P-ANOMALY-%%' THEN 'anomaly' ELSE 'volume' END AS source,
+                    count(DISTINCT id) AS occurrences,max(id) AS last_decision_id
+             FROM signals WHERE policy_id LIKE 'P-ANOMALY-%%' OR policy_id LIKE 'P-VOLUME-%%'
+             GROUP BY server_id,source HAVING count(DISTINCT id)>=%s""", (WINDOW, REPEAT))
+    for row in rows:
+        if selected(row["server_id"], row["source"]):
+            await suspend(row["server_id"], row["source"], "이상 호출 반복으로 자동 중지",
+                          {"occurrences": row["occurrences"], "last_decision_id": row["last_decision_id"],
+                           "window_seconds": WINDOW, "threshold": REPEAT})
+
+
+async def resume(server_id, actor, note):
+    from . import disposal
+    if await asyncio.to_thread(disposal.blocked, server_id=server_id, raise_errors=True):
+        raise ValueError("폐기된 서버는 새 도입 승인이 필요합니다.")
+    async with db.transaction() as connection:
+        server = await (await connection.execute(
+            "SELECT lifecycle FROM mcp_servers WHERE id=%s FOR UPDATE", (server_id,))).fetchone()
+        if not server or server["lifecycle"] != "OPERATING":
+            raise ValueError("운영 중인 이용 관계만 복귀할 수 있습니다.")
+        row = await (await connection.execute(
+            """UPDATE ops_suspensions SET resumed_at=now(),resumed_by=%s,resume_note=%s
+               WHERE server_id=%s AND resumed_at IS NULL RETURNING id""", (actor, note, server_id))).fetchone()
+        if not row:
+            raise ValueError("자동 중지 상태가 아닙니다.")
+        await connection.execute(
+            "UPDATE mcp_servers SET status='PENDING',status_reason='관리자 복귀 승인 · 계약 확인 대기' WHERE id=%s", (server_id,))
+        await review.record_event("automatic-suspension-resume", "approved", "server", server_id, actor,
+                                  reason=note, connection=connection)
+        if local_jobs.is_local(server_id):
+            await connection.execute(
+                "DELETE FROM local_run_stops WHERE server_id=%s AND user_token='' AND device_id=''", (server_id,))
+    return {"server_id": server_id, "status": "PENDING"}
+
+
+def self_test_cases(base):
+    cases = []
+    for name, patch, decision, policy in (
+        ("normal", {}, "Allow", "P-AUTHZ-ALLOW-001"),
+        ("new-tool", {"contract": {"registered": False}}, "Block", "MCP-REGISTRY-001"),
+        ("unapproved-connection", {"principal": {"shadow_endpoints": 1}}, "Alert", "MCP-SHADOW-001"),
+        ("unapproved-listener", {"principal": {"shadow_listeners": 1}}, "Alert", "MCP-SHADOW-002"),
+        ("call-burst", {"resource": {"data_class": "important"}, "context": {"recent_important": 10, "important_limit": 10}},
+         "Approval", "P-VOLUME-001"),
+        ("repeated-denials", {"context": {"recent_blocks": 5, "block_limit": 5}}, "Alert", "P-ANOMALY-001"),
+    ):
+        value = copy.deepcopy(base)
+        for key, fields in patch.items():
+            value[key] = {**value.get(key, {}), **fields}
+        value["synthetic"] = True
+        cases.append({"name": name, "input": value, "expected": {"decision": decision, "policy_id": policy}})
+    return cases
+
+
+async def self_test(opa_url):
+    info = None
+    results = []
+    try:
+        info = await release.policy_info(opa_url)
+        digest = canonical_hash({k: info.get(k) for k in ("loaded_sha256", "loaded_data_sha256", "capabilities_sha256")})
+    except Exception as exc:
+        digest = canonical_hash({"policy_info_error": type(exc).__name__})
+        results.append({"synthetic": True, "passed": False, "error": type(exc).__name__})
+    previous = await db.fetch_one("SELECT passed FROM alert_self_tests WHERE policy_hash=%s ORDER BY id DESC LIMIT 1", (digest,))
+    if previous and previous["passed"] and info and info["matches"]:
+        return
+    try:
+        if not info or not info["matches"]:
+            raise RuntimeError("배포 정책 일치 확인 실패")
+        corpus = json.loads((Path(os.getenv("POLICY_PATH", "/policy/policy.rego")).parent / "replay_cases_pac15.json").read_text(encoding="utf-8"))
+        corpus = corpus["pac15_replay"]
+        baseline = {**corpus["base"], **next(c["patch"] for c in corpus["cases"] if c["id"] == "normal-public-read")}
+        async with httpx.AsyncClient(timeout=8, trust_env=False) as client:
+            for case in self_test_cases(baseline):
+                response = await client.post(opa_url, json={"input": case["input"]})
+                response.raise_for_status()
+                actual = response.json().get("result")
+                passed = (POLICY_RESULT.is_valid(actual)
+                          and all(actual.get(k) == v for k, v in case["expected"].items()))
+                alert = None
+                if passed and case["name"] != "normal":
+                    origin_id = str(uuid.uuid4())
+                    if case["name"] == "new-tool":
+                        alert = await catalog_alerts("synthetic", [{"type": "tool-set-drift", "added": ["synthetic-tool"]}], origin_id, True)
+                    else:
+                        kind = alert_kind(actual["policy_id"])
+                        if kind:
+                            alert = await emit_alert(kind, "self-test", origin_id, {"policy_hash": digest, "case": case["name"]}, True)
+                    passed = bool(alert and alert["synthetic"])
+                results.append({"case": case["name"], "synthetic": True, "expected": case["expected"],
+                                "actual": actual, "alert_id": alert["id"] if alert else None, "passed": passed})
+        after = await release.policy_info(opa_url)
+        if info != after:
+            raise RuntimeError("자체 시험 중 정책 변경")
+    except Exception as exc:
+        results.append({"synthetic": True, "passed": False, "error": type(exc).__name__})
+    passed = bool(results) and all(r["passed"] for r in results)
+    await db.execute("INSERT INTO alert_self_tests(policy_hash,passed,results) VALUES (%s,%s,%s)",
+                     (digest, passed, Jsonb(results)))
+    if not passed:
+        await emit_alert("policy-self-test-failed", "self-test", digest,
+                         {"policy_hash": digest, "results": results}, True)
+
+
+async def tick(opa_url):
+    # Keep cross-process exclusion through the work, without holding a database transaction across HTTP.
+    async with (await db.pool()).connection() as guard:
+        try:
+            row = await (await guard.execute("SELECT pg_try_advisory_lock(721017121) AS acquired")).fetchone()
+            await guard.commit()
+            if not row["acquired"]:
+                return
+            from . import incidents
+            try:
+                await incidents.check_deadlines()
+            except Exception:
+                LOG.exception("Incident deadline check failed")
+            await observed_alerts()
+            await endpoint_alerts()
+            await contain_repeated()
+            await self_test(opa_url)
+        finally:
+            try:
+                # Cancellation may arrive after acquisition but before its result was received.
+                await guard.rollback()
+                await guard.execute("SELECT pg_advisory_unlock(721017121)")
+                await guard.commit()
+            except BaseException:
+                # A pooled connection must not carry the session lock into its next borrower.
+                await guard.close()
+                raise
+
+
+async def watch(opa_url):
+    while True:
+        try:
+            await tick(opa_url)
+        except Exception:
+            LOG.exception("Operational response check failed")
+        await asyncio.sleep(INTERVAL)

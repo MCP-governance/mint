@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>가입 요청 · MINT</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/console.css" />
+  <link rel="stylesheet" href="/static/login.css" />
+</head>
+<body class="gate">
+  <main class="panel gate-card">
+    <div class="gate-brand">
+      <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+      <span class="gate-word"><b>MINT</b></span>
+      <button class="icon-btn ghost lang-btn" type="button" data-lang-toggle aria-label="언어 바꾸기" title="언어">English</button>
+    </div>
+    <h1 id="signup-title" data-i18n-ctx="button">가입 요청</h1>
+    <form id="signup-form" class="form stack">
+      <label>아이디<input name="username" autocomplete="username" required minlength="3" maxlength="32" /></label>
+      <label>이름<input name="display_name" required minlength="2" maxlength="80" /></label>
+      <label>비밀번호<input name="password" type="password" autocomplete="new-password" required minlength="8" maxlength="150" /></label>
+      <p class="err" id="signup-message" role="status" tabindex="-1"></p>
+      <button class="btn primary" type="submit">가입 요청</button>
+      <a href="/login">로그인</a>
+    </form>
+  </main>
+  <script type="module" src="/static/signup.js"></script>
+</body>
+</html>

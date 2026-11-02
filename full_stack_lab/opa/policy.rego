@@ -1,0 +1,771 @@
+package mcp.authz
+
+# MCP 도구 호출 판정 규칙.
+#
+#   규칙      : 이 파일
+#   값        : opa/data.json          (조직이 자주 바꾸는 허용 목적지·길이 제한)
+#   관리정보  : opa/policy_ledger.json (정책 목록)
+#
+# 값과 관리정보가 이 파일 밖에 있는 이유는 수명이 다르기 때문이다. 판단조건은 재검토와
+# 재승인을 거쳐 바뀌고, 허용 목적지는 그보다 훨씬 자주 바뀐다.
+#
+# 구조: else 사슬이 아니라 "성립한 후보 전부"를 모으고 관리대장의 priority로 최종
+# 판단을 고른다. else 사슬은 첫 일치 이후를 볼 수 없어 정책 충돌 자체를
+# 관측할 수 없다. 여기서는 진 후보가 conflicts에 남는다.
+
+import rego.v1
+
+# Facts are made from the reviewed registry, never tool arguments or IP geography.
+residency_fact := object.get(input, ["pac", "facts", "residency"], null)
+
+residency_required if {
+    residency_fact != null
+    object.get(residency_fact, "enabled", true) != false
+}
+residency_required if {
+    residency_fact == null
+    object.get(input, ["tool", "provider_hosted"], false)
+    object.get(input, ["resource", "data_class"], "important") != "public"
+}
+
+residency_pack := data.residency
+residency_grade := object.get(residency_fact, "grade", "important") if is_object(residency_fact)
+
+residency_pack_valid if {
+    is_object(residency_fact)
+    residency_fact.pack_sha256 == crypto.sha256(json.marshal(residency_pack))
+    is_array(residency_fact.targets)
+    count(residency_fact.targets) > 0
+    residency_grade in {"public", "nonimportant", "important"}
+    every grade in ["public", "nonimportant", "important"] {
+        residency_pack.rules[grade]["*"] in {"allow", "approval", "deny"}
+    }
+}
+
+residency_known(target) if {
+    is_string(target.processor)
+    trim_space(target.processor) != ""
+    is_string(target.evidence_ref)
+    trim_space(target.evidence_ref) != ""
+    is_array(target.processing_countries)
+    count(target.processing_countries) > 0
+    is_array(target.storage_countries)
+    count(target.storage_countries) > 0
+}
+
+residency_country(target) := {country |
+    some country in array.concat(target.processing_countries, target.storage_countries)
+}
+
+residency_rule(country) := object.get(residency_pack.rules[residency_grade], country, residency_pack.rules[residency_grade]["*"])
+
+# This fact comes from the registry review bound to location, endpoint and policy pack.
+# It cannot exempt important data, missing evidence or a tool's downstream target.
+residency_transfer_reviewed(target) if {
+    residency_grade == "nonimportant"
+    residency_known(target)
+    object.get(target, "transfer_reviewed", false) == true
+    is_string(target.transfer_basis)
+    trim_space(target.transfer_basis) != ""
+}
+
+residency_denials contains "위치 규칙 확인 불가" if {
+    residency_required
+    not residency_pack_valid
+}
+residency_denials contains "처리·저장 위치 또는 처리 주체 미확인" if {
+    residency_required
+    residency_grade != "public"
+    some target in residency_fact.targets
+    not residency_known(target)
+}
+residency_denials contains "금지된 목적지 국가" if {
+    residency_required
+    some target in residency_fact.targets
+    some country in residency_country(target)
+    not residency_rule(country) in {"allow", "approval"}
+}
+
+residency_approvals contains "목적지 국가 승인 필요" if {
+    residency_required
+    some target in residency_fact.targets
+    some country in residency_country(target)
+    residency_rule(country) == "approval"
+    not residency_transfer_reviewed(target)
+}
+residency_approvals contains "국외 이전 근거 확인 필요" if {
+    residency_required
+    residency_grade != "public"
+    some target in residency_fact.targets
+    some country in residency_country(target)
+    not country in residency_pack.home_countries
+    trim_space(object.get(target, "transfer_basis", "")) == ""
+}
+
+residency_approved if {
+    document := input.pac
+    data.mcp.pac15.pac13_approved with input as document
+}
+
+candidate["P-RESIDENCY-001"] := {
+    "decision": "Block",
+    "reason": concat(" · ", sort(residency_denials)),
+    "restrictions": {},
+    "conditions": {"matched": ["pac.facts.residency"], "violated": sort(residency_denials)},
+} if count(residency_denials) > 0
+
+candidate["P-RESIDENCY-002"] := {
+    "decision": "Approval",
+    "reason": concat(" · ", sort(residency_approvals)),
+    "restrictions": {},
+    "conditions": {"matched": ["pac.facts.residency"], "violated": sort(residency_approvals)},
+} if {
+    count(residency_denials) == 0
+    count(residency_approvals) > 0
+    not residency_approved
+}
+
+# ── 정책 입력 ────────────────────────────────────────────────────────
+
+# 적용환경. 관리대장의 environments와 대조해 정책의 적용 여부를 정한다.
+environment := object.get(input, ["environment"], "prod")
+
+# 상황정보(요청 시각). 없으면 undefined가 되어 시간 기반 판단이 성립하지 않는다.
+# 조용히 현재 시각으로 대체하면 만료된 승인이 되살아나므로 대체하지 않는다.
+now_ns := time.parse_rfc3339_ns(input.now)
+
+recent_calls := object.get(input, ["context", "recent_calls"], 0)
+
+call_limit := object.get(input, ["context", "call_limit"], 1000000000)
+
+recent_important := object.get(input, ["context", "recent_important"], 0)
+
+important_limit := object.get(input, ["context", "important_limit"], 1000000000)
+
+# 호출량은 "끝난 호출"만 세면 막을 수 없다 - 같이 도착한 호출은 서로를
+# 세지 못한다. Gateway가 판정 전에 이번 호출의 자리를 원자적으로 예약하고, 그
+# 결과(진행 중 호출 수·같은 호출의 중복 여부)를 여기로 넘긴다. 요청 예약 상태가 없으면
+# 이 통제에서 판단하지 않는다.
+active_calls := object.get(input, ["context", "active_calls"], 0)
+
+concurrency_limit := object.get(input, ["context", "concurrency_limit"], 1000000000)
+
+duplicate_in_flight := object.get(input, ["context", "duplicate_in_flight"], false)
+
+classification_required := object.get(input, ["resource", "classification", "required"], false)
+
+classification_source := object.get(input, ["resource", "classification", "source"], null)
+
+approval_valid_until := object.get(input, ["contract", "approval_valid_until"], null)
+
+# 이용 관계의 전주기 단계. 값이 없는 배포(구버전 Gateway)는 운영 중으로 본다.
+# 기본값을 TERMINATING으로 두면 스키마가 아직 안 올라간 순간에 전부 막힌다.
+lifecycle_state := object.get(input, ["contract", "lifecycle"], "OPERATING")
+
+# 요청자의 엔드포인트에 보고된 미등록 MCP 설정 수. 게이트웨이를 통과하지 않는
+# 경로의 존재를 정책 입력으로 넘긴다. 세는 일은 엔드포인트 평면이, 판단은 정책이.
+shadow_endpoints := object.get(input, ["principal", "shadow_endpoints"], 0)
+
+# 엔드포인트 평면이 망에서 직접 찾은 미등록 MCP 리스너 수. 설정 파일 기반 발견과
+# 다른 증거다 - 설정에 없어도 프로세스가 떠 있으면 경로는 존재한다.
+shadow_listeners := object.get(input, ["principal", "shadow_listeners"], 0)
+
+# CTL-13 / RSK-12. 이번 호출의 인자에서 발견된 비신뢰 지시 표지.
+untrusted_markers := object.get(input, ["request", "untrusted_markers"], [])
+
+# PDF 8~10쪽 민감 입력: Presidio가 본문에서 찾은 개인정보 유형(값은 넘기지 않는다)과,
+# 같은 주체의 최근 중요정보 열람 뒤 외부 전송이라는 연쇄 표지.
+pii_types := object.get(input, ["request", "pii_types"], [])
+
+sequence_flags := object.get(input, ["request", "sequence_flags"], [])
+
+# POL-33. 같은 주체가 창 안에서 중요정보를 읽은 다른 서버와, 이 도구가 넘겨받아도 된다고 심사된 서버.
+# 앞의 목록은 Gateway의 request.flow_match_mode에 따라 다르다. coarse(기본)는 창 안에서 읽은 모든 서버,
+# content는 이 호출의 내용을 읽기 결과와 대조해 같거나 대조하지 못한 서버만 담는다. 대조 결과는
+# request.flow_observed에 기록만 되고 이 정책은 flow_observed와 flow_match_mode를 읽지 않는다.
+flow_sources := object.get(input, ["request", "flow_sources"], [])
+
+accepts_from := object.get(input, ["tool", "accepts_from"], [])
+
+unapproved_flow contains source if {
+	some source in flow_sources
+	not source in accepts_from
+}
+
+# A provider-hosted server is outside the organisation: a reviewed receiving tool there would turn
+# accepts_from into an export permit that MCP-DATA-EGRESS-001 refuses for every role.
+unapproved_flow contains source if {
+	some source in flow_sources
+	object.get(input, ["tool", "provider_hosted"], false) == true
+}
+
+# The call's own recipient (external mail, external URL) - distinct from the registered
+# MCP endpoint. The Gateway classifier decides internal vs external from the catalog's
+# organisation domains; the policy does not keep a second list.
+external_transfer if {
+	some destination in destinations
+	destination.external == true
+}
+
+sensitive_transfer if input.resource.data_class == "important"
+
+sensitive_transfer if count(pii_types) > 0
+
+# CTL-28 / RSK-27. 최근 창 안에서 이 주체가 받은 차단 수.
+recent_blocks := object.get(input, ["context", "recent_blocks"], 0)
+
+block_limit := object.get(input, ["context", "block_limit"], 1000000000)
+
+# CTL-24 / CTL-25. 등록 서버의 전송 보호와 목적지 허용 여부. 값이 없는 배포에서
+# 전부 막히지 않도록 기본값은 참이고, 그 사실은 관리대장이 드러낸다.
+transport_secure := object.get(input, ["contract", "transport_secure"], true)
+
+endpoint_allowed := object.get(input, ["contract", "endpoint_allowed"], true)
+
+# Where the call is going (URLs, mail recipients) and what outbound content holds.
+# The Gateway's classifier fills these from the tool arguments; the policy judges.
+destinations := object.get(input, ["destinations"], [])
+
+dlp_findings := object.get(input, ["request", "dlp"], [])
+
+# Restrictions a Restrict decision may carry are the ones this tool can enforce.
+# A policy that returns something the Gateway cannot apply is a fail-closed error,
+# so the policy only ever proposes what the tool declares.
+restrictable := object.get(input, ["tool", "restrictable"], [])
+
+x_restrictions := {key: data.restrictions[key] |
+	some key in restrictable
+	data.restrictions[key]
+}
+
+# The policy evaluates each approved action against the applicable constraints.
+pac_findings := findings if {
+    document := object.get(input, "pac", {})
+    findings := data.mcp.decision.all_findings with input as document
+}
+
+has_permission if {
+    count(pac_findings) == 0
+}
+
+candidate[id] := {
+    "decision": {"DENY": "Block", "APPROVAL": "Approval", "ALERT": "Alert"}[finding.effect],
+    "reason": sprintf("승인된 PAC 실행 범위를 충족하지 못했습니다: %s", [id]),
+    "restrictions": {},
+    "conditions": {"matched": [], "violated": [id]},
+} if {
+    some finding in pac_findings
+    id := finding.policy_id
+}
+
+contract_ok if {
+	input.contract.registered
+	input.contract.enabled
+	input.contract.schema_hash_match
+	input.contract.description_hash_match
+	input.contract.version_match
+	input.contract.known_tools_only
+	input.contract.metadata_safe
+	input.contract.supplier_approved
+	input.contract.critical_vulnerabilities == 0
+}
+
+classification_missing if {
+	classification_source == null
+}
+
+classification_missing if {
+	classification_source == ""
+}
+
+# ── 필수 입력 누락 ─────────────────────────────────────────────────
+
+missing_inputs contains "principal.role" if not input.principal.role
+
+missing_inputs contains "resource.data_class" if not input.resource.data_class
+
+missing_inputs contains "tool.action" if not input.tool.action
+
+missing_inputs contains "contract" if not input.contract
+
+# 시각은 시간 기반 통제가 걸려 있을 때만 필수다. 없는데 만료를 판단하면
+# 만료된 승인이 통과하므로, 그때는 판단하지 않고 차단한다.
+missing_inputs contains "now" if {
+	approval_valid_until != null
+	not input.now
+}
+
+# ── 정책 후보 (판단 결과) ─────────────────────────────────────────────
+#
+# 각 후보는 자기 조건만 본다. "앞 규칙이 안 걸렸으니까"에 기대지 않는다.
+# 더 제한적인 정책이 이기는 것은 관리대장의 priority가 정한다.
+
+candidate["P-CONTROL-INPUT-001"] := {
+	"decision": "Block",
+	"reason": "정책 판단에 필요한 입력이 없어 안전한 상태로 차단했습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": [x | some x in missing_inputs]},
+} if {
+	count(missing_inputs) > 0
+}
+
+candidate["MCP-REGISTRY-001"] := {
+	"decision": "Block",
+	"reason": "등록되었고 활성화된 MCP 서버/도구가 아닙니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["contract.registered"]},
+} if {
+	not input.contract.registered
+}
+
+candidate["MCP-REGISTRY-002"] := {
+	"decision": "Block",
+	"reason": "Registry에서 비활성화된 MCP 도구입니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["contract.registered"], "violated": ["contract.enabled"]},
+} if {
+	input.contract.registered
+	not input.contract.enabled
+}
+
+# 전주기의 마지막 통제. 종료 절차에 들어갔거나 폐기된 이용 관계의 호출은 권한을
+# 따지기 전에 끊는다. 이 판정이 Registry 비활성(MCP-REGISTRY-002)보다 우선순위가
+# 앞선 이유는, 둘이 동시에 성립할 때 감사에 남아야 하는 사실이 "비활성이라 막혔다"가
+# 아니라 "폐기된 관계라 막혔다"이기 때문이다. 되돌리는 절차가 서로 다르다.
+#
+# 그리고 이 차단은 종료 판정의 C3(연속성)을 조직이 자체 증명하는 수단이기도 하다.
+# 차단 시각 이후 실행된 호출이 0건이라는 사실은 제공자가 아니라 이 강제 경로가
+# 만든다. 그래서 관찰 모드에서도 풀리지 않는다(MCP- 접두사는 항상 집행).
+candidate["MCP-DECOMM-001"] := {
+	"decision": "Block",
+	"reason": "종료·폐기 절차에 들어간 이용 관계입니다. 실행하지 않습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["contract.lifecycle"]},
+} if {
+	lifecycle_state in {"TERMINATING", "RETIRED"}
+}
+
+candidate["MCP-SUPPLY-001"] := {
+	"decision": "Block",
+	"reason": "승인되지 않은 공급자이거나 치명적 공급망 취약점이 있습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["contract.supplier_approved"]},
+} if {
+	not input.contract.supplier_approved
+}
+
+candidate["MCP-SUPPLY-001"] := {
+	"decision": "Block",
+	"reason": "승인되지 않은 공급자이거나 치명적 공급망 취약점이 있습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["contract.critical_vulnerabilities"]},
+} if {
+	input.contract.supplier_approved
+	input.contract.critical_vulnerabilities > 0
+}
+
+candidate["MCP-CATALOG-001"] := {
+	"decision": "Block",
+	"reason": "도구 목록, 설명, 스키마 또는 서버 버전이 승인본과 다릅니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": catalog_violations},
+} if {
+	input.contract.registered
+	input.contract.enabled
+	input.contract.supplier_approved
+	input.contract.critical_vulnerabilities == 0
+	not contract_ok
+}
+
+catalog_violations := sort([field |
+	some field in ["schema_hash_match", "description_hash_match", "version_match", "known_tools_only", "metadata_safe"]
+	object.get(input, ["contract", field], false) == false
+])
+
+candidate["P-APPROVAL-EXPIRY-001"] := {
+	"decision": "Block",
+	"reason": "도입·사용 승인의 유효기간이 지났습니다. 재승인 전에는 실행할 수 없습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["contract.approval_valid_until"]},
+} if {
+	approval_valid_until != null
+	now_ns >= time.parse_rfc3339_ns(approval_valid_until)
+}
+
+candidate["P-CLASSIFICATION-001"] := {
+	"decision": "Block",
+	"reason": "데이터 등급의 관리대장 출처가 없어 기본 차단했습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["resource.classification.source"]},
+} if {
+	classification_required
+	classification_missing
+}
+
+candidate["P-RATE-001"] := {
+	"decision": "Block",
+	"reason": "짧은 시간 동안의 호출 수가 상한을 넘었습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["context.recent_calls"]},
+} if {
+	recent_calls >= call_limit
+}
+
+# 한 주체가 동시에 돌리는 호출 수. 호출량 상한과 다른 것을 막는다 - 상한은 시간당
+# 총량이고 이것은 "지금 열려 있는 연결"이다. 상한만으로는 60건을 1초 안에 동시에
+# 보내는 것과 1분에 걸쳐 보내는 것이 같아진다.
+candidate["P-RATE-002"] := {
+	"decision": "Block",
+	"reason": "이 주체가 동시에 실행 중인 호출 수가 상한을 넘었습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["context.active_calls"]},
+} if {
+	active_calls > concurrency_limit
+}
+
+# 실행 중·미확인 호출과 완료 이력 보존 기간 안의 같은 변경 호출을 함께 막는다.
+candidate["P-RATE-003"] := {
+	"decision": "Block",
+	"reason": "같은 호출이 실행 중이거나 미확인 상태 또는 변경 이력 보존 기간 안에 있어 다시 실행하지 않습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["context.duplicate_in_flight"]},
+} if {
+	duplicate_in_flight == true
+}
+
+candidate["P-X-APPROVAL-001"] := {
+	"decision": "Approval",
+	"reason": "중요정보의 고위험 실행은 10분 이내 승인이 필요합니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["tool.action=x", "resource.data_class=important"], "violated": ["approval.granted"]},
+} if {
+	input.tool.action == "x"
+	input.resource.data_class == "important"
+	not input.approval.granted
+}
+
+candidate["P-VOLUME-001"] := {
+	"decision": "Approval",
+	"reason": "짧은 시간에 중요정보 접근이 몰려 승인이 필요합니다. 단건으로는 정상인 열람도 누적되면 유출 패턴입니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["resource.data_class=important", "context.recent_important"], "violated": ["approval.granted"]},
+} if {
+	input.resource.data_class == "important"
+	recent_important >= important_limit
+	not input.approval.granted
+}
+
+candidate["P-X-RESTRICT-001"] := {
+	"decision": "Restrict",
+	"reason": "외부 전송은 도구가 집행할 수 있는 제한(길이·저널링 사본)을 적용한 뒤 실행합니다.",
+	# 값이지 규칙이 아니다. 조직은 정책의 모양보다 제한 값을 훨씬 자주 바꾼다.
+	"restrictions": x_restrictions,
+	"conditions": {"matched": ["tool.action=x", "PAC15.capabilities", "tool.restrictable"], "violated": []},
+} if {
+	input.tool.action == "x"
+	input.resource.data_class != "important"
+	has_permission
+	count(x_restrictions) > 0
+}
+
+# x 행위인데 이 도구에 걸 수 있는 제한이 없다(예: 외부 사이트로 이동). 권한은 있으므로
+# 막지 않지만, 제한 없이 나가는 외부 전송이므로 증적을 올린다.
+candidate["P-X-ALERT-001"] := {
+	"decision": "Alert",
+	"reason": "외부 전송·고위험 실행이지만 이 도구에는 적용할 제한이 없어 증적을 강화해 허용합니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["tool.action=x", "PAC15.capabilities"], "violated": ["tool.restrictable"]},
+} if {
+	input.tool.action == "x"
+	input.resource.data_class != "important"
+	has_permission
+	count(x_restrictions) == 0
+}
+
+# CTL-25 / RSK-25. 인자로 지정한 목적지가 사내 인프라(서비스 이름, 사설·링크로컬
+# 주소, 메타데이터 엔드포인트, file://)다. 등록 서버의 주소(MCP-EGRESS-001)가 아니라
+# 이번 호출이 향하는 곳이고, 권한과 무관하게 끊는다 - SSRF에는 정당한 역할이 없다.
+candidate["MCP-EGRESS-002"] := {
+	"decision": "Block",
+	"reason": "도구 인자의 목적지가 사내 인프라 주소입니다(SSRF). 인트라넷 허용 목록 밖의 내부 주소로는 요청하지 않습니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["destinations[].category=infrastructure"], "violated": []},
+} if {
+	some destination in destinations
+	destination.category == "infrastructure"
+}
+
+# 개인정보·비밀 패턴이 실린 외부 전송. 역할과 무관하게 막는다 - 승인으로 풀 수 있게
+# 두면 승인이 개인정보 반출 절차가 된다. 정당한 반출은 예외 관리대장으로 간다.
+candidate["P-DLP-001"] := {
+	"decision": "Block",
+	"reason": sprintf("외부로 나가는 내용에서 민감정보 패턴이 발견되었습니다: %v", [concat(", ", sort(dlp_findings))]),
+	"restrictions": {},
+	"conditions": {"matched": ["tool.action=x", "request.dlp"], "violated": []},
+} if {
+	input.tool.action == "x"
+	count(dlp_findings) > 0
+}
+
+candidate["P-IMPORTANT-ALERT-001"] := {
+	"decision": "Alert",
+	"reason": "직원의 중요정보 열람은 허용하되 경보와 증적을 남깁니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["principal.role=employee", "resource.data_class=important"], "violated": []},
+} if {
+	input.principal.role == "employee"
+	input.resource.data_class == "important"
+	input.tool.action == "r"
+}
+
+# 엔드포인트 평면이 이 요청자의 PC에서 등록되지 않은 MCP 설정을 발견한 상태.
+# 호출 자체는 정상이고 막을 근거가 없다 — 막으면 통제가 아니라 연좌다. 다만 이
+# 사람에게는 강제 경로를 통과하지 않는 경로가 따로 있으므로, 같은 권한의 같은
+# 호출이어도 남겨야 할 증적의 양이 다르다.
+candidate["MCP-SHADOW-001"] := {
+	"decision": "Alert",
+	"reason": "요청자의 엔드포인트에 등록되지 않은 MCP 설정이 보고되어 증적을 강화합니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["principal.shadow_endpoints"], "violated": []},
+} if {
+	shadow_endpoints > 0
+	has_permission
+	contract_ok
+}
+
+# 분석 단위인 이용 관계(조직·목적·제공자·허용 자원)를 종료 때만이 아니라
+# 평상시 호출에도 적용한다. 서버에 운영 중인 이용 관계가 있는데 호출한 자원이 어느 관계의
+# 허용 자원에도 없으면 경보로 남긴다. 차단이 아닌 이유: 카탈로그의 allowed_resources는
+# 회수 범위를 적는 목록이라 인가 목록으로 검토되기 전에는 차단으로 올리지 않는다.
+# 이용 관계 정보가 입력에 없으면 판단하지 않는다.
+relationship_defined := object.get(input, ["relationship", "defined"], false)
+
+relationship_in_scope := object.get(input, ["relationship", "in_scope"], true)
+
+candidate["P-SCOPE-001"] := {
+	"decision": "Alert",
+	"reason": sprintf("이용 관계가 허용한 자원 밖입니다: %v", [concat(", ", object.get(input, ["relationship", "outside"], []))]),
+	"restrictions": {},
+	"conditions": {"matched": ["relationship.defined"], "violated": ["relationship.in_scope"]},
+} if {
+	relationship_defined == true
+	relationship_in_scope == false
+	has_permission
+	contract_ok
+}
+
+# CTL-24 / RSK-24. 평문 원격 endpoint는 권한을 따지기 전에 끊는다. 이 통제가
+# 등록·권한 판단보다 뒤에 있으면 "권한은 있으니 평문으로 보냈다"가 만들어진다.
+candidate["MCP-TRANSPORT-001"] := {
+	"decision": "Block",
+	"reason": "원격 MCP endpoint가 전송 보호 없이 구성되어 있습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["contract.transport_secure"]},
+} if {
+	not transport_secure
+}
+
+# CTL-25 / RSK-25. 허용 목록 밖 목적지. SSRF와 내부망 탐색이 여기서 갈린다.
+candidate["MCP-EGRESS-001"] := {
+	"decision": "Block",
+	"reason": "등록 서버의 목적지가 허용된 egress 목록에 없습니다.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["contract.endpoint_allowed"]},
+} if {
+	not endpoint_allowed
+}
+
+# Presidio reports entity types only; raw content never enters OPA's decision log.
+# Role-independent: an approval must not become the procedure for exporting PII.
+candidate["MCP-DATA-EGRESS-001"] := {
+	"decision": "Block",
+	"reason": "중요정보 또는 탐지된 개인정보를 외부 목적지로 전송할 수 없습니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["destinations[].external"], "violated": ["request.pii_types", "resource.data_class"]},
+} if {
+	external_transfer
+	sensitive_transfer
+	not provider_pii_transfer
+}
+
+# A provider-hosted server receives the arguments of every call, reads included.
+# Its own data grade is about what comes back, so only detected PII in what goes out counts.
+# One body per fact set, so the recorded conditions name the fact that matched.
+candidate["MCP-DATA-EGRESS-001"] := {
+	"decision": "Block",
+	"reason": "탐지된 개인정보를 공급자 호스팅 서버로 전송할 수 없습니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["tool.provider_hosted"], "violated": ["request.pii_types"]},
+} if {
+	provider_pii_transfer
+}
+
+provider_pii_transfer if {
+	object.get(input, ["tool", "provider_hosted"], false) == true
+	count(pii_types) > 0
+}
+
+# The Gateway links the calls of one verified principal: an executed read of important
+# data in the last 10 minutes followed by an external send. Each call alone may pass.
+candidate["P-CHAIN-001"] := {
+	"decision": "Block",
+	"reason": "최근 10분 안에 중요정보를 열람한 주체가 외부 전송을 시도했습니다(열람→반출 연쇄).",
+	"restrictions": {},
+	"conditions": {"matched": ["request.sequence_flags", "destinations[].external"], "violated": []},
+} if {
+	external_transfer
+	"sensitive_read_then_send" in sequence_flags
+}
+
+# Internal or external alike: a write or execution on another server is where important data read
+# from one server crosses to the next. Only a reviewed receiving tool may take it.
+candidate["P-FLOW-001"] := {
+	"decision": "Block",
+	"reason": sprintf("승인 없는 서버 간 중요정보 전달입니다(최근 열람 서버: %s).", [concat(", ", sort([s | some s in unapproved_flow]))]),
+	"restrictions": {},
+	"conditions": {"matched": ["request.flow_sources"], "violated": ["tool.accepts_from"]},
+} if {
+	count(unapproved_flow) > 0
+}
+
+# CTL-13 / RSK-12. 인자 안의 비신뢰 지시. 고위험 행위에서는 사람이 본다.
+candidate["P-UNTRUSTED-CONTENT-001"] := {
+	"decision": "Approval",
+	"reason": "도구 인자에서 비신뢰 지시 표지가 발견되어 승인이 필요합니다. 도구 결과나 외부 문서에서 온 내용이 실행을 바꾸지 못하게 합니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["request.untrusted_markers"], "violated": ["approval.granted"]},
+} if {
+	count(untrusted_markers) > 0
+	input.tool.action in {"w", "x"}
+	not input.approval.granted
+}
+
+# 같은 표지라도 읽기에서는 막을 근거가 아니다. 증적만 강화한다.
+candidate["P-UNTRUSTED-CONTENT-002"] := {
+	"decision": "Alert",
+	"reason": "도구 인자에서 비신뢰 지시 표지가 발견되어 증적을 강화합니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["request.untrusted_markers"], "violated": []},
+} if {
+	count(untrusted_markers) > 0
+	input.tool.action == "r"
+}
+
+# CTL-28 / RSK-27. 반복 차단. 한 건은 오조작이고 누적은 탐색이다.
+candidate["P-ANOMALY-001"] := {
+	"decision": "Alert",
+	"reason": "짧은 시간에 차단이 반복되어 이상행위로 증적을 강화합니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["context.recent_blocks"], "violated": []},
+} if {
+	recent_blocks >= block_limit
+	has_permission
+}
+
+# 망에서 직접 발견된 미등록 MCP 리스너. 설정 파일 기반 MCP-SHADOW-001보다 강한
+# 증거라 더 높은 우선순위를 갖는다 - 설정은 지울 수 있지만 떠 있는 리스너는
+# 지금 이 순간 열려 있는 경로다.
+candidate["MCP-SHADOW-002"] := {
+	"decision": "Alert",
+	"reason": "요청자의 엔드포인트 망에서 등록되지 않은 MCP 리스너가 발견되어 증적을 강화합니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["principal.shadow_listeners"], "violated": []},
+} if {
+	shadow_listeners > 0
+	has_permission
+	contract_ok
+}
+
+candidate["P-AUTHZ-ALLOW-001"] := {
+	"decision": "Allow",
+	"reason": "승인된 사용자·서버·기능·자원 범위와 PAC 실행 조건을 충족했습니다.",
+	"restrictions": {},
+	"conditions": {"matched": ["PAC15.capabilities", "contract"], "violated": []},
+} if {
+	has_permission
+	contract_ok
+}
+
+# ── 정책 상태·적용환경 필터 ─────────────────────────────────
+#
+# 관리대장이 "운영" 또는 "제한"이라고 말하고, 이 요청의 환경이 정책의 적용환경에
+# 들어 있을 때만 집행한다. "중지"된 정책이 계속 집행되면 중지 결정이 기록에만
+# 존재하고 실제와 다르다(승인된 정책과 실제 배포 정책의 일치).
+
+enforcing_status := {"운영", "제한"}
+
+in_force(pid) if {
+	entry := data.policy_ledger[pid]
+	entry.status in enforcing_status
+	environment in entry.environments
+}
+
+active_candidates[pid] := verdict if {
+	some pid, verdict in candidate
+	in_force(pid)
+}
+
+# 관리대장에 아예 없는 정책. 정책 코드만으로 목적과 근거를 대신해서는 안 되므로,
+# 관리정보 없는 정책이 판단에 관여하면 통제 실패로 본다.
+unregistered_candidates contains pid if {
+	some pid, _ in candidate
+	not data.policy_ledger[pid]
+}
+
+# ── 우선순위 기반 최종 판단 ────────────────────────────────────────
+
+ranked := sort([[data.policy_ledger[pid].priority, pid] |
+	some pid, _ in active_candidates
+])
+
+selected_id := ranked[0][1]
+
+base_verdict := active_candidates[selected_id]
+
+conflicts := [{
+	"policy_id": pid,
+	"decision": verdict.decision,
+	"priority": data.policy_ledger[pid].priority,
+} |
+	some pid, verdict in active_candidates
+	pid != selected_id
+]
+
+# ── 실패 안전 ──────────────────────────────────────────────────────
+
+default_verdict := {
+	"decision": "Block",
+	"reason": "집행 중인 정책 후보가 없어 기본 차단했습니다. 정책 상태·적용환경·입력을 확인하세요.",
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["no-in-force-policy"]},
+}
+
+ledger_failure_verdict := {
+	"decision": "Block",
+	"reason": sprintf("관리대장에 없는 정책이 판단에 관여했습니다: %v", [sort([pid | some pid in unregistered_candidates])]),
+	"restrictions": {},
+	"conditions": {"matched": [], "violated": ["policy-ledger-missing"]},
+}
+
+# ── 판단 결과 조립 ──────────────────────────────────────────
+
+enrich(verdict, pid) := object.union(verdict, {
+	"policy_id": pid,
+	"policy_name": object.get(data.policy_ledger, [pid, "name"], ""),
+	"policy_version": object.get(data.policy_ledger, [pid, "version"], "unknown"),
+	"policy_status": object.get(data.policy_ledger, [pid, "status"], "unknown"),
+	"priority": object.get(data.policy_ledger, [pid, "priority"], 9999),
+	"risk_ids": object.get(data.policy_ledger, [pid, "risk_ids"], []),
+	"control_ids": object.get(data.policy_ledger, [pid, "control_ids"], []),
+	"requirement_ids": object.get(data.policy_ledger, [pid, "requirement_ids"], []),
+	"obligations": object.get(data.policy_ledger, [pid, "obligations"], []),
+	"conflicts": conflicts,
+	"policy_set_version": object.get(data.policy_set, "version", "unknown"),
+	"environment": environment,
+})
+
+decision := enrich(ledger_failure_verdict, "P-CONTROL-LEDGER-001") if {
+	count(unregistered_candidates) > 0
+} else := enrich(base_verdict, selected_id) if {
+	selected_id
+} else := enrich(default_verdict, "P-CONTROL-DEFAULT-001")
