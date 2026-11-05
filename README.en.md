@@ -25,6 +25,8 @@ and judges from evidence whether the credentials were revoked.
 The employee PC kit deploys the harness's managed settings and reports status. The server installs as a single Docker Compose bundle,
 and administrators operate it through the web console and the `./mint.sh` command.
 
+Start with the **[User guide (Korean)](docs/user-guide/README.md)** for employee setup, tool usage consent, administrator approvals, call records, and termination procedures.
+
 <p align="center">
   <img src="assets/architecture.png" alt="MINT overall architecture" width="100%">
 </p>
@@ -135,11 +137,13 @@ When solo operation is needed, set `ROOT_SOLO_APPROVAL=1` in `.env` so that the 
 
 | Document | Contents |
 | --- | --- |
+| [User guide (Korean)](docs/user-guide/README.md) | Employee and administrator workflows, feature instructions, and troubleshooting |
 | [deploy/README.md](deploy/README.md) | Server installation, console certificate, operations commands, service layout |
 | [endpoint-agent/README.md](endpoint-agent/README.md) | Employee PC kit installation, the `mint` command, removal |
 | [addons/litellm/README.md](addons/litellm/README.md) | LiteLLM integration |
 | [policy/README.md](policy/README.md) | Security policy code (OPA/Rego) |
 | [CHANGELOG.md](CHANGELOG.md) | Changes by version |
+| [Version and tag management (Korean)](docs/RELEASING.md) | Product release tags and documentation history |
 
 For the MCP specification see [modelcontextprotocol.io](https://modelcontextprotocol.io), for the container environment see [docs.docker.com](https://docs.docker.com), and for the policy engine see [openpolicyagent.org](https://www.openpolicyagent.org).
 

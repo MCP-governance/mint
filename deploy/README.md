@@ -2,6 +2,8 @@
 
 이 문서는 MINT 1.0.0을 조직의 서버에 설치하고 운영하는 관리자를 위한 안내입니다. 아래 명령은 별도 표시가 없으면 `mint/deploy`에서 실행합니다.
 
+설치 후 콘솔 사용은 [관리자 운영 안내](../docs/user-guide/administrator.md), 직원 배포는 [처음 시작하기](../docs/user-guide/getting-started.md)를 봅니다. 출시 태그와 문서 변경 이력의 구분은 [버전과 태그 관리](../docs/RELEASING.md)를 따릅니다.
+
 ## 설치 전 준비
 
 | 항목 | 요구 사항 |
