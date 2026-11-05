@@ -4,59 +4,123 @@
 
 # MINT
 
-**MCP Governance Gateway**
+MCP Governance Gateway
 
-[한국어](README.md) · **English**
+[한국어](README.md) · English
 
 ![Version](https://img.shields.io/badge/version-1.0.0-1f4287)
 ![MCP](https://img.shields.io/badge/MCP-2025--11--25-1f4287)
-![Docker](https://img.shields.io/badge/deploy-Docker%20Compose-2496ED?logo=docker&logoColor=white)
+![Docker](https://img.shields.io/badge/install-Docker%20Compose-2496ED?logo=docker&logoColor=white)
 
 </div>
 
-MINT limits the MCP connections used by AI coding agents on employee PCs (Claude Code and Codex CLI) to the ones the company has approved,
-and decides every tool call that passes through the gateway **before it runs**. When an employee requests an MCP onboarding, the request goes through
-a supply-chain check and is approved by a different administrator. Only approved servers appear in the managed settings on employee PCs.
+MINT is a governance solution that manages the MCP servers a company connects to its AI coding agents, from onboarding to disposal.
+It reviews and approves the MCP servers employees request, applies them to the connection settings on employee PCs, and decides and records every tool call before it runs.
+When use ends, MINT blocks the connection and keeps the credential revocation results together with their evidence.
 
-Each call is checked for identity, tool classification, input inspection, policy, and usage consent. Personal and secret data detected in responses is masked before
-it is returned, responses that cannot be returned safely are withheld, and every decision is written to an append-only audit ledger. When a usage relationship ends, MINT blocks the server immediately
-and judges from evidence whether the credentials were revoked.
-
-The employee PC kit deploys the harness's managed settings and reports status. The server installs as a single Docker Compose bundle,
-and administrators operate it through the web console and the `./mint.sh` command.
-
-Start with the **[User guide (Korean)](docs/user-guide/README.md)** for employee setup, tool usage consent, administrator approvals, call records, and termination procedures.
-
-See **[Console screenshots (Korean)](docs/user-guide/screenshots.md)** for actual console screens captured in light mode.
+The goal is for security teams to see who uses which MCP server for what purpose in one console, and for employees to use approved MCP servers right away without extra setup.
+MINT currently supports Claude Code and Codex CLI.
 
 <p align="center">
   <img src="assets/architecture.png" alt="MINT overall architecture" width="100%">
 </p>
 
-The trace collector (Jaeger) in the diagram is an optional component that is not part of the production bundle. To use it, install it separately and turn on the connection with `OTEL_SDK_DISABLED=false` and `OTEL_EXPORTER_OTLP_ENDPOINT` in `deploy/.env`. It is off by default.
+The trace collector (Jaeger) in the diagram is an optional component that is not included in the default installation.
+
+## Contents
+
+- [Key features](#key-features)
+- [Supported environments](#supported-environments)
+- [Getting started](#getting-started)
+- [Operations](#operations)
+- [Before you adopt MINT](#before-you-adopt-mint)
+- [Documentation](#documentation)
+- [License](#license)
+
+## Key features
+
+MINT supports MCP servers in the order they are used, from the onboarding request through deployment, tool use, call records, and termination and disposal.
+
+### 1. MCP onboarding request and approval
+
+Employees request the MCP server they need on the Onboarding screen of the console, stating the purpose and the data classification involved.
+For a remote MCP server, MINT summarizes the tools it provides and their terms of use in a report. For an MCP server delivered as source code, the report contains the supply-chain check results for a pinned version.
+
+Administrators review the report and approve it, setting which tools may be used, by whom, and until when.
+By default, an administrator other than the requester approves, so no single person both requests and approves.
+
+<p align="center">
+  <img src="assets/screenshots/onboarding-light.jpg" alt="MCP onboarding request screen" width="90%">
+</p>
+
+### 2. Deployment to employee PCs
+
+Approved MCP servers are applied to the managed settings of Claude Code and Codex CLI through the MINT kit installed on employee PCs.
+Employees do not need to enter MCP server addresses or credentials themselves. The gateway keeps the credentials needed for each MCP server separately and does not hand them to employees.
+
+Administrators can change who may use each MCP server, or suspend it immediately, on the AI connection management screen.
+On Windows and Linux, employees can run the `mint` command in a new terminal to check the connection status, the MCP servers available to them, and their own call records, and to request a new MCP server.
+
+### 3. Tool usage consent
+
+For tools that require consent, employees review the purpose, the information they will enter, and the external destinations that information goes to before first use, and then decide whether to consent.
+Consents and their expiry dates can be reviewed and withdrawn on the Tool usage consent screen. Calls after withdrawal are blocked, but calls that have already run are not undone.
+
+### 4. Call decisions and response protection
+
+Every tool call that passes through the gateway is checked before it runs against the user, the tool type, the input, organization policy, and usage consent, and is decided as allow, alert, restrict, pending approval, or block.
+For calls pending approval, an administrator reviews the details on the Dashboard and decides whether to run them.
+
+When personal or secret information is found in a response, that part is masked before the response is returned. Responses that cannot be returned safely are withheld.
+If the checks before execution cannot be completed, the call is blocked. If the response check after execution cannot be completed, the response is withheld.
+
+### 5. Call records and security monitoring
+
+Every decision and execution result is appended to the audit record. The audit record prevents ordinary edits and deletions, and changes to it can be detected.
+Employees can search their own calls and administrators can search all calls in the organization, viewing the policy decision, the actual execution, and the response handling separately. Administrators can export the results as audit evidence.
+
+The Security monitoring screen shows alerts, incident report evidence, and the status of the SIEM integration.
+When an unapproved MCP setting is found on an employee PC, an alert is raised, and the alert details link straight to the related screen.
+
+<p align="center">
+  <img src="assets/screenshots/call-records-light.jpg" alt="Call logs screen" width="90%">
+</p>
+
+### 6. Termination and disposal
+
+To stop using an MCP server, select the usage relationship on the Termination and disposal screen and start termination.
+Calls to that MCP server are blocked as soon as termination starts, and the credentials and settings to revoke are listed.
+After completing revocation and collecting evidence, the administrator records the termination verdict and checks any remaining follow-up actions.
+
+See [Console screenshots (Korean)](docs/user-guide/screenshots.md) for the actual console screens.
 
 ## Supported environments
 
-| Harness | Status |
+| AI coding agent | Status |
 | --- | --- |
 | Claude Code | Supported |
 | Codex CLI | Supported |
 
 | Employee PC operating system | Installation | Status |
 | --- | --- | --- |
-| Windows 11 (x64) | One installer file, one UAC prompt | Supported |
-| Linux (Ubuntu 20.04 or later, x86-64) | One executable file, administrator password once | Supported |
-| macOS | One command, administrator password once | Experimental |
+| Windows 11 (x64) | Run the installer, approve User Account Control (UAC) once | Supported |
+| Linux (Ubuntu 20.04 or later, x86-64, Python 3.8 or later) | Run the executable, enter the administrator password once | Supported |
+| macOS | Run one command, enter the administrator password once | In testing |
 
-| Gateway server | Requirement |
+| Gateway host | Requirements |
 | --- | --- |
 | Operating system | Linux x86_64 |
-| Software | Docker Engine 24 or later, Docker Compose v2, `git`, `openssl`, `python3` |
-| Resources | 4 vCPU, 16 GB memory, 40 GB disk |
-| Network | One internal IPv4 address reachable from employee PCs; outbound internet access for image builds and onboarding review |
-| Published ports | `443` (console, MCP, authentication) and `3128` (model API proxy for managed harnesses) on that address |
+| Software | Docker Engine 24 or later, Docker Compose v2, git, openssl, python3 |
+| Docker | MINT needs its own Docker environment. Do not share the same Docker with MCP runtimes of other services. |
+| Recommended resources | 4 vCPU, 16 GB memory, 40 GB disk |
+| Network | One internal IPv4 address reachable from employee PCs, and internet access for installation and onboarding checks |
+| Ports | 443 (console, MCP connections, sign-in), 3128 (model API connections from AI coding agents) |
 
-## Quick install
+## Getting started
+
+### 1. Install the gateway
+
+Run the following on the Linux machine that will serve as the gateway.
 
 ```bash
 git clone --branch v1.0.0 https://github.com/MCP-governance/mint.git
@@ -64,92 +128,79 @@ cd mint/deploy
 ./install.sh --bind <internal IPv4>
 ```
 
-The installer creates `.env`, the secrets, and the signing keys, builds the images and starts the services, then exports the private root certificate to `deploy/ca/root.crt`.
-When it finishes, compare the fingerprint in `deploy/ca/root.sha256` through a separate channel, register the root certificate in the browser, and sign in at `https://<internal IPv4>/` as the administrator `root`.
-The initial password is in `deploy/initial-admin-password`; change it right away with **Change password** at the top of the console or `./mint.sh set-password root`.
+When installation finishes, the required settings and keys are created automatically, and the root certificate for console access is saved to `deploy/ca/root.crt`.
+For installation options such as a DNS name or a trusted certificate, see [Gateway installation and operations (Korean)](deploy/README.md).
 
-DNS names, trusted certificates (`tailscale` or `file`), solo operation mode, and the settings are described in [deploy/README.md](deploy/README.md).
+### 2. Sign in to the console
 
-## Connecting employee PCs
+1. Register the root certificate `deploy/ca/root.crt` on the administrator PC. Before registering, obtain the fingerprint in `deploy/ca/root.sha256` through a separate channel and confirm it matches.
+2. Open `https://<internal IPv4>/` in a browser and sign in as the administrator `root`.
+3. The initial password is in `deploy/initial-admin-password`. After signing in, change it right away with Change password at the top of the console.
+4. On the User management screen, add the administrator accounts that will share approvals, and the employee accounts.
 
-An employee signs in to the console, downloads the installer for their operating system from **PC connection setup**, runs it, and signs in with a MINT account.
-The installer contains the gateway address, the root certificate, and its fingerprint. It does not contain a per-employee enrollment token.
+### 3. Connect employee PCs
+
+Employees sign in to the console, download the installer for their operating system from the PC connection setup screen, run it, and sign in with their MINT account.
+The gateway address and certificate information are built into the installer, so nothing needs to be entered. Claude Code or Codex CLI and a model account are prepared separately, and the MINT sign-in and the model sign-in are done separately.
 
 | Operating system | Installer | How to run |
 | --- | --- | --- |
-| Windows | `mcp-managed-setup-windows.exe` | Run the downloaded file and approve the UAC prompt once. The installer is not code-signed, so if Windows shows an "Unknown publisher" warning, choose **Run** once more. |
-| Linux | `mcp-managed-setup-linux` | The browser does not set the execute permission, so run `chmod +x` and then start it from a terminal. Enter the administrator password once. x86-64 only. |
-| macOS | `mcp-connect-macos.command` | Run it from a terminal with `/bin/bash "$HOME/Downloads/mcp-connect-macos.command"`. Enter the administrator password once. Run the file within five minutes of downloading it. If it expires or the attempt fails, download a new file. |
+| Windows | `mcp-managed-setup-windows.exe` | Run the file and approve User Account Control once. If Windows shows an "Unknown publisher" warning, choose Run once more. |
+| Linux | `mcp-managed-setup-linux` | Paste the command shown in the console into a terminal and enter the administrator password once. |
+| macOS | `mcp-connect-macos.command` | Run the command shown in the console in a terminal and enter the administrator password once. Run it within 5 minutes of downloading. If it expires or fails, download a new file from the console. |
 
-On Linux, use the command shown in the console as it is.
-
-```bash
-f="$(ls -t ~/Downloads/mcp-managed-setup-linux* | head -1)" && chmod +x "$f" && "$f"
-```
-
-On Windows and Linux the default is Simple mode, which installs into the signed-in employee account. After the installation check passes, the PC is activated automatically according to the organization's settings.
-If you choose **Advanced: isolated account** in **PC connection setup**, the harness is isolated in a separate managed account with firewall and access restrictions, and an administrator activates it in **Endpoint management**.
-On macOS the kit installs into a separate managed account and is not activated automatically, so an administrator activates it in **Endpoint management**.
-On Windows and Linux, run `mint` in a new terminal after installation to see the status, MCP servers, call logs, and onboarding requests.
-For what the installer sets up, removal, and troubleshooting, see [endpoint-agent/README.md](endpoint-agent/README.md).
+Windows and Linux install in simple mode by default, and once the installation check passes the PC can be used right away, depending on organization settings.
+If stronger control is needed, choose isolated account mode in PC connection setup. PCs installed in isolated account mode and macOS PCs can be used after an administrator activates them on the Endpoint management screen.
+For what gets installed and how to remove it, see the [Employee PC kit guide (Korean)](endpoint-agent/README.md).
 
 ## Operations
 
-| Task | Where |
+Administrators handle most operations in the web console.
+
+| What you want to do | Console menu |
 | --- | --- |
-| To-do items and decision summary, call approvals | Console **Dashboard** |
-| Call lookup | Console **Call logs** |
-| Alerts, incident reports, monitoring integration | Console **Security monitoring** |
-| MCP server audience and suspension, control of built-in features and connectors | Console **AI connection management** |
-| Accounts, usage suspension, sign-up requests | Console **User management** |
-| Change user ID, reset password | Console **User management** |
-| Change my password | **Change password** at the top of the console |
-| Employee PC activation and status | Console **Endpoint management** |
-| Policy review | Console **Security management policies** |
-| MCP onboarding request, review, and approval | Console **Adoption management** (employee menu: **Onboarding**; page title: **Onboarding requests**) |
-| Ending a usage relationship, revocation evidence | Console **Termination and disposal** |
-| Tool usage consent | Console **Tool usage consent** |
-| Employee PC installers | Console **PC connection setup** |
+| Check to-do items and decision status, approve pending calls | Dashboard |
+| Review and approve MCP onboarding requests | Adoption management (employees use Onboarding) |
+| Set who may use each MCP server and suspend it, control built-in features and connectors | AI connection management |
+| Search calls and export audit evidence | Call logs |
+| Check alerts, incident reports, SIEM integration | Security monitoring |
+| Review the security policies in effect | Security management policies |
+| Add accounts, suspend use, handle sign-up requests, reset passwords | User management |
+| Activate employee PCs and check their status | Endpoint management |
+| End usage relationships and review revocation evidence | Termination and disposal |
+| Download employee PC installers | PC connection setup |
 
-| Command (run in `deploy/`) | What it does |
+Gateway status checks, backup and restore, upgrades, and the LiteLLM integration are handled with the `deploy/mint.sh` command on the gateway host.
+If the console cannot be reached, run `./mint.sh status` in `deploy/` to check status and `./mint.sh logs gateway` to check logs. The administrator password can be reset with `./mint.sh set-password root`.
+The full command list is in [Gateway installation and operations (Korean)](deploy/README.md).
+
+## Before you adopt MINT
+
+| Topic | Details |
 | --- | --- |
-| `./mint.sh status` | Service status, version, readiness |
-| `./mint.sh up [--with-siem]` | Start or restart |
-| `./mint.sh add-account <id> --role 관리자\|직원` | Add an account (`관리자` is administrator, `직원` is employee; `admin` and `user` are also accepted) |
-| `./mint.sh set-password <id>` | Change a password |
-| `./mint.sh ca` | Re-export the root certificate and fingerprint |
-| `./mint.sh backup [directory]` · `restore <backup>` | Back up and restore |
-| `./mint.sh upgrade` | Back up, then restart on the current version |
-| `./mint.sh logs [service]` · `down` | Logs · stop (data is kept) |
-| `./mint.sh litellm enable\|check\|status\|rotate-key\|disable` | LiteLLM integration |
-
-A production deployment uses independent approval by default: a request is approved by an administrator other than the requester.
-When solo operation is needed, set `ROOT_SOLO_APPROVAL=1` in `.env` so that the top-level administrator `root` can approve its own requests. Such approvals are recorded separately in the ledger.
-
-## Security boundaries
-
-- **Identity comes only from the transport-layer token.** Values in arguments, headers, or reported by the client are recorded but not used in decisions.
-- **Employee tokens are never forwarded to upstream MCP servers.** The gateway holds per-server credentials separately.
-- **If it cannot decide, it blocks.** If the policy engine or an inspector fails, the call is blocked. Data whose classification is unclear is treated as important and decided under policy.
-- **The gateway controls only calls that pass through its path.** PCs without the kit, unmanaged accounts, and vendor default connectors are the responsibility of endpoint, network, and vendor settings; the console shows them as a control status.
-- **Simple mode does not prevent endpoint bypass.** The gateway's pre-execution decision applies, but another process in the employee account that reaches the outside without going through the gateway must be covered by other controls such as EDR, DLP, or a proxy. Without such controls, use the isolated account.
-- **A termination verdict is a judgment based on the evidence collected and submitted, within the scope that evidence establishes.** It does not directly verify that the provider actually revoked the credentials.
+| Scope of control | MINT manages calls that pass through the gateway. PCs without the kit, unmanaged accounts, and built-in connectors of AI services are shown in the console with their control status, and must be controlled together with PC, network, and AI service settings. |
+| Simple mode | It installs in the employee account and is easy to use, but it does not stop other programs on the PC from connecting outside without going through the gateway. If there is no PC security solution such as EDR or DLP, isolated account mode is recommended. |
+| Approval | By default, an administrator other than the requester approves. An organization with only one administrator can set `ROOT_SOLO_APPROVAL` to `1` in `deploy/.env` so that the top-level administrator root can approve its own requests. Such approvals are marked separately in the audit record. |
+| Termination verdict | The termination result is judged from the evidence collected and submitted. MINT does not directly verify that the MCP service provider actually revoked the credentials. |
 
 ## Documentation
 
+The guides below are written in Korean.
+
 | Document | Contents |
 | --- | --- |
-| [User guide (Korean)](docs/user-guide/README.md) | Employee and administrator workflows, feature instructions, and troubleshooting |
-| [deploy/README.md](deploy/README.md) | Server installation, console certificate, operations commands, service layout |
-| [endpoint-agent/README.md](endpoint-agent/README.md) | Employee PC kit installation, the `mint` command, removal |
-| [addons/litellm/README.md](addons/litellm/README.md) | LiteLLM integration |
-| [policy/README.md](policy/README.md) | Security policy code (OPA/Rego) |
-| [CHANGELOG.md](CHANGELOG.md) | Changes by version |
-| [Version and tag management (Korean)](docs/RELEASING.md) | Product release tags and documentation history |
+| [User guide](docs/user-guide/README.md) | Getting started, how to use each feature, and troubleshooting for employees and administrators |
+| [Console screenshots](docs/user-guide/screenshots.md) | Actual console screens |
+| [Gateway installation and operations](deploy/README.md) | Installation options, console certificate, operation commands, backup and upgrade |
+| [Employee PC kit guide](endpoint-agent/README.md) | Installation and removal by operating system, using the `mint` command |
+| [LiteLLM integration](addons/litellm/README.md) | Integration for organizations that also use LiteLLM |
+| [Security policy](policy/README.md) | How the security policies included in MINT are organized |
+| [Changelog](CHANGELOG.md) | Changes by version |
+| [Versions and tags](docs/RELEASING.md) | How solution versions are distinguished from documentation history |
 
-For the MCP specification see [modelcontextprotocol.io](https://modelcontextprotocol.io), for the container environment see [docs.docker.com](https://docs.docker.com), and for the policy engine see [openpolicyagent.org](https://www.openpolicyagent.org).
+The MCP specification is available at [modelcontextprotocol.io](https://modelcontextprotocol.io).
 
 ## License
 
-No open-source license has been specified yet. Copying, distributing, or modifying this software without the copyright holder's permission is not allowed.
-The bundled third-party components (OPA, Presidio, Caddy, Gitea, PostgreSQL, and others) are governed by their own licenses.
+No open source license has been chosen yet. The software may not be copied, distributed, or modified without the copyright holder's permission.
+Third-party components included in MINT (OPA, Presidio, Caddy, Gitea, PostgreSQL, and others) are subject to their own licenses.
