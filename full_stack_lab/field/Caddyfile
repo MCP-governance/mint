@@ -7,6 +7,7 @@
 #   /.well-known/oauth-protected-resource Gateway의 RFC 9728 메타데이터
 #   /oauth/*, /.well-known/oauth-authorization-server   IdP(직원 PC 키트의 로그인·갱신·폐기)
 #   /git/*                                내부 Gitea — 솔루션 로그인을 거쳐야만(forward_auth)
+#   /jaeger/*                             호출 추적 화면 — 콘솔 관리자 로그인을 거쳐야만(forward_auth)
 #   그 밖 전부                             Console(웹) — agent-service가 정적 파일도 같이 서빙
 #
 # Docker가 HTTPS 포트를 Tailscale IP에만 바인딩한다. 루트는 배치의 /data에만 보존한다.
@@ -38,6 +39,19 @@
 			request_header -Authorization
 			uri strip_prefix /git
 			reverse_proxy corp-git:3000
+		}
+	}
+
+	# 추적 화면은 자체 로그인이 없다. agent-service가 관리자 세션(/jaeger 전용 쿠키)을 확인한 요청만 넘긴다.
+	redir /jaeger /jaeger/
+	handle /jaeger/* {
+		route {
+			forward_auth agent-service:8000 {
+				uri /auth/jaeger
+			}
+			request_header -Authorization
+			request_header -Cookie
+			reverse_proxy jaeger:16686
 		}
 	}
 

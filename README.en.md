@@ -11,6 +11,7 @@ MCP Governance Gateway
 ![Version](https://img.shields.io/badge/version-1.0.0-1f4287)
 ![MCP](https://img.shields.io/badge/MCP-2025--11--25-1f4287)
 ![Docker](https://img.shields.io/badge/install-Docker%20Compose-2496ED?logo=docker&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-1f4287)
 
 </div>
 
@@ -24,8 +25,6 @@ MINT currently supports Claude Code and Codex CLI.
 <p align="center">
   <img src="assets/architecture.png" alt="MINT overall architecture" width="100%">
 </p>
-
-The trace collector (Jaeger) in the diagram is an optional component that is not included in the default installation.
 
 ## Contents
 
@@ -78,6 +77,7 @@ If the checks before execution cannot be completed, the call is blocked. If the 
 
 Every decision and execution result is appended to the audit record. The audit record prevents ordinary edits and deletions, and changes to it can be detected.
 Employees can search their own calls and administrators can search all calls in the organization, viewing the policy decision, the actual execution, and the response handling separately. Administrators can export the results as audit evidence.
+Administrators can select the trace ID in a call's details to see, on the trace screen, each processing step the call went through in the gateway and how long each step took.
 
 The Security monitoring screen shows alerts, incident report evidence, and the status of the SIEM integration.
 When an unapproved MCP setting is found on an employee PC, an alert is raised, and the alert details link straight to the related screen.
@@ -163,6 +163,7 @@ Administrators handle most operations in the web console.
 | Review and approve MCP onboarding requests | Adoption management (employees use Onboarding) |
 | Set who may use each MCP server and suspend it, control built-in features and connectors | AI connection management |
 | Search calls and export audit evidence | Call logs |
+| See a call's processing steps and timing | Trace ID in Call logs (trace screen) |
 | Check alerts, incident reports, SIEM integration | Security monitoring |
 | Review the security policies in effect | Security management policies |
 | Add accounts, suspend use, handle sign-up requests, reset passwords | User management |
@@ -181,6 +182,7 @@ The full command list is in [Gateway installation and operations (Korean)](deplo
 | Scope of control | MINT manages calls that pass through the gateway. PCs without the kit, unmanaged accounts, and built-in connectors of AI services are shown in the console with their control status, and must be controlled together with PC, network, and AI service settings. |
 | Simple mode | It installs in the employee account and is easy to use, but it does not stop other programs on the PC from connecting outside without going through the gateway. If there is no PC security solution such as EDR or DLP, isolated account mode is recommended. |
 | Approval | By default, an administrator other than the requester approves. An organization with only one administrator can set `ROOT_SOLO_APPROVAL` to `1` in `deploy/.env` so that the top-level administrator root can approve its own requests. Such approvals are marked separately in the audit record. |
+| Trace screen | Trace data is a temporary record for investigating performance and failures, and is cleared when the gateway restarts. The audit record is the official record. Organizations with their own trace collector can change where traces are sent in the settings. |
 | Termination verdict | The termination result is judged from the evidence collected and submitted. MINT does not directly verify that the MCP service provider actually revoked the credentials. |
 
 ## Documentation
@@ -202,5 +204,5 @@ The MCP specification is available at [modelcontextprotocol.io](https://modelcon
 
 ## License
 
-No open source license has been chosen yet. The software may not be copied, distributed, or modified without the copyright holder's permission.
-Third-party components included in MINT (OPA, Presidio, Caddy, Gitea, PostgreSQL, and others) are subject to their own licenses.
+MINT is provided under the [MIT License](LICENSE). Anyone may use, copy, modify, and distribute it. The software is provided as is, without warranty of any kind, and the authors accept no liability arising from its use.
+Third-party components included in MINT (OPA, Presidio, Caddy, Gitea, Jaeger, PostgreSQL, and others) are subject to their own licenses.

@@ -349,6 +349,9 @@ async def login(request: Login, http_request: Request):
     # 같은 토큰을 내부 Gitea(/git) 전용 쿠키로도 준다. Console API는 계속 Bearer만 받으므로 이 쿠키로는
     # Console을 조작할 수 없고, 스크립트도 읽지 못한다(HttpOnly).
     response.set_cookie(GIT_COOKIE, token, max_age=lifetime, path="/git", httponly=True, samesite="lax")
+    if "admin" in user["roles"]:
+        # 추적 화면(/jaeger)도 같은 방식이다. 관리자에게만 준다.
+        response.set_cookie(TRACE_COOKIE, token, max_age=lifetime, path="/jaeger", httponly=True, samesite="lax")
     return response
 
 
@@ -611,6 +614,7 @@ async def logout(authorization: str | None = Header(default=None)):
     await db.execute("DELETE FROM agent_revoked_tokens WHERE expires_at < now()")
     response = JSONResponse({"status": "logged_out"})
     response.delete_cookie(GIT_COOKIE, path="/git")
+    response.delete_cookie(TRACE_COOKIE, path="/jaeger")
     return response
 
 
@@ -626,6 +630,25 @@ async def session_activity(authorization: str | None = Header(default=None)):
 # X-WEBAUTH-USER로 돌려주고, Gitea는 Caddy의 고정 IP에서 온 그 헤더만 믿는다. 그래서 Gitea에
 # 들어가는 길은 솔루션 로그인 하나이고, 계정을 중지하면 Gitea도 다음 요청부터 막힌다.
 GIT_COOKIE = "mcpgw_git"
+TRACE_COOKIE = "mcpgw_trace"
+
+
+# Caddy가 /jaeger/* 요청마다 묻는다. 추적 화면은 자체 로그인이 없으므로 콘솔 관리자 세션으로만 연다.
+@app.get("/auth/jaeger", include_in_schema=False)
+async def jaeger_forward_auth(request: Request):
+    user = None
+    if token := request.cookies.get(TRACE_COOKIE):
+        try:
+            user = await authenticated_user(f"Bearer {token}")
+        except HTTPException:
+            user = None
+    if user is None:
+        if "text/html" in request.headers.get("accept", ""):
+            return RedirectResponse("/login?next=/jaeger/", status_code=302)
+        return Response(status_code=401)
+    if "admin" not in user["roles"]:
+        return Response(status_code=403)
+    return Response(status_code=200)
 GITEA_ORG = os.getenv("GITEA_ORG", "mcp")
 # Gitea가 자기 경로로 예약한 이름(models/user/user.go reservedUsernames). 시험 계정 `user`가 여기 걸린다.
 GITEA_RESERVED = {"api", "assets", "attachments", "avatar", "avatars", "captcha", "explore", "ghost",

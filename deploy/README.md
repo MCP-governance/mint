@@ -12,7 +12,7 @@
 | 소프트웨어 | Docker Engine 24 이상, Docker Compose v2 플러그인, Git, OpenSSL, Python 3. MINT 전용 Docker 데몬과 이에 접근할 권한이 필요합니다. 다른 배포의 MCP 실행 환경과 데몬을 공유하지 않습니다. 기동 시 `mcpgw.runtime` 라벨이 있는 컨테이너와 네트워크를 제거할 수 있습니다. |
 | 네트워크 | 직원 PC가 접속할 수 있는 서버의 사내 IPv4와 이미지 빌드·도입 심사에 필요한 인터넷 연결을 준비합니다. `0.0.0.0`과 loopback 주소는 사용할 수 없습니다. |
 | 수신 포트 | 지정한 IPv4의 TCP 443은 HTTPS 콘솔·MCP·인증에 사용합니다. TCP 3128은 관리형 PC의 모델 프록시에 사용하며 `MODEL_PROXY_PORT`로 변경할 수 있습니다. 필요한 PC만 접근하도록 방화벽을 설정합니다. |
-| 내부 네트워크 | 기본 Docker 네트워크는 `10.246.1.0/24`, `10.246.3.0/24`, `10.246.4.0/24`, `10.246.5.0/24`, `10.246.6.0/24`, `10.246.9.0/24`, `10.246.11.0/24`를 사용합니다. 조직의 네트워크와 겹치면 `.env`의 `MINT_NET_PREFIX`를 변경합니다. |
+| 내부 네트워크 | 기본 Docker 네트워크는 `10.246.1.0/24`, `10.246.3.0/24`, `10.246.4.0/24`, `10.246.5.0/24`, `10.246.6.0/24`, `10.246.9.0/24`, `10.246.11.0/24`, `10.246.12.0/24`를 사용합니다. 조직의 네트워크와 겹치면 `.env`의 `MINT_NET_PREFIX`를 변경합니다. |
 
 ## 설치와 첫 로그인
 
@@ -65,7 +65,7 @@ cd mint/deploy
 | `FLOW_MATCH_MODE` | 기본 `coarse`입니다. 중요정보를 읽은 뒤 다른 서버에 쓰기·실행하는 흐름의 판정 방식입니다. |
 | `TERMINATION_SLA_DAYS`, `CONNECTOR_REVIEW_DAYS` | 종료 기한과 연결 검토 주기입니다. 각각 기본 14일입니다. |
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub 계정 연결에 사용하는 선택적인 OAuth App client ID입니다. 현 판본의 콘솔에는 직원용 계정 연결 화면이 없으므로 이 값만 설정해도 직원이 연결할 수 없습니다. 아래 운영자 자격 파일을 사용할 수 있습니다. |
-| `OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT` | 외부 OpenTelemetry 수집기 연동 설정입니다. 기본값은 비활성입니다. |
+| `OTEL_SDK_DISABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT` | 호출 추적 설정입니다. 기본값은 사용(`false`)이며, 주소를 비우면 함께 설치되는 추적 수집기(Jaeger)로 보냅니다. 외부 OpenTelemetry 수집기를 쓰면 주소를 넣습니다. 추적 화면은 콘솔 관리자로 로그인한 뒤 `https://<사내 IPv4>/jaeger/`에서 엽니다. 추적 정보는 메모리에만 보관하므로 다시 시작하면 비워집니다. |
 | `SIEM_URL`, `SIEM_TOKEN_FILE`, `SIEM_CA_FILE` | 선택적인 SIEM 전송 설정입니다. 파일은 `deploy/siem/`에 두고 컨테이너 경로 `/run/siem/…`로 지정한 뒤 `./mint.sh up --with-siem`을 실행합니다. |
 | 서명 키와 `USER_CREDENTIAL_KEY` | 설치 시 생성합니다. 기존 값을 임의로 바꾸거나 잃으면 서명 검증과 저장된 자격 복구에 문제가 생길 수 있습니다. |
 
@@ -136,6 +136,8 @@ git checkout v<새 판본>
 ./mint.sh upgrade
 ./mint.sh status
 ```
+
+추적 수집기가 포함되기 전에 설치한 `.env`에는 `OTEL_SDK_DISABLED=true`가 남아 있습니다. 추적을 쓰려면 이 값을 `false`로 바꾼 뒤 기동합니다.
 
 `upgrade`는 현재 체크아웃 판본에서 백업한 다음 빌드·기동합니다. 따라서 위처럼 판본 전환 전에 별도 백업을 확보합니다. 준비 상태와 정책 일치를 확인하고 필요한 경우 직원 PC 설치 파일을 갱신합니다.
 
