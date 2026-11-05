@@ -24,6 +24,8 @@ MINT는 직원 PC의 AI 코딩 에이전트(Claude Code·Codex CLI)가 쓰는 MC
 직원 PC 키트는 하네스의 관리형 설정을 배포하고 상태를 보고합니다. 서버는 Docker Compose 묶음 하나로 설치하며,
 관리자는 웹 콘솔과 `./mint.sh` 명령으로 운영합니다.
 
+처음 사용한다면 **[사용자 안내서](docs/user-guide/README.md)**에서 직원 PC 연결, 도구 이용 동의, 관리자 승인, 호출 기록과 종료·폐기 절차를 확인하세요.
+
 <p align="center">
   <img src="assets/architecture.png" alt="MINT 전체 구성도" width="100%">
 </p>
@@ -133,11 +135,13 @@ Windows와 Linux는 설치 뒤 새 터미널에서 `mint`를 실행해 상태·M
 
 | 문서 | 내용 |
 | --- | --- |
+| [사용자 안내서](docs/user-guide/README.md) | 직원·관리자별 시작하기, 기능별 사용 절차와 문제 해결 |
 | [deploy/README.md](deploy/README.md) | 서버 설치, 콘솔 인증서, 운영 명령, 서비스 구성 |
 | [endpoint-agent/README.md](endpoint-agent/README.md) | 직원 PC 키트 설치·`mint` 명령·제거 |
 | [addons/litellm/README.md](addons/litellm/README.md) | LiteLLM 연동 |
 | [policy/README.md](policy/README.md) | 보안 정책 코드(OPA/Rego) |
 | [CHANGELOG.md](CHANGELOG.md) | 판본별 변경 |
+| [버전과 태그 관리](docs/RELEASING.md) | 제품 출시 태그와 문서 커밋 이력의 구분 |
 
 MCP 규격은 [modelcontextprotocol.io](https://modelcontextprotocol.io), 컨테이너 환경은 [docs.docker.com](https://docs.docker.com), 정책 엔진은 [openpolicyagent.org](https://www.openpolicyagent.org)를 참고합니다.
 
