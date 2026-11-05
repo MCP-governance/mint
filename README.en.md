@@ -27,6 +27,8 @@ and administrators operate it through the web console and the `./mint.sh` comman
 
 Start with the **[User guide (Korean)](docs/user-guide/README.md)** for employee setup, tool usage consent, administrator approvals, call records, and termination procedures.
 
+See **[Console screenshots (Korean)](docs/user-guide/screenshots.md)** for actual console screens captured in light mode.
+
 <p align="center">
   <img src="assets/architecture.png" alt="MINT overall architecture" width="100%">
 </p>

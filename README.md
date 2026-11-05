@@ -26,6 +26,8 @@ MINT는 직원 PC의 AI 코딩 에이전트(Claude Code·Codex CLI)가 쓰는 MC
 
 처음 사용한다면 **[사용자 안내서](docs/user-guide/README.md)**에서 직원 PC 연결, 도구 이용 동의, 관리자 승인, 호출 기록과 종료·폐기 절차를 확인하세요.
 
+라이트 모드의 실제 콘솔 화면은 **[화면으로 둘러보기](docs/user-guide/screenshots.md)**에 모았습니다.
+
 <p align="center">
   <img src="assets/architecture.png" alt="MINT 전체 구성도" width="100%">
 </p>
