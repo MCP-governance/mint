@@ -204,7 +204,7 @@ up() {
   echo "[2/4] 게이트웨이·콘솔·검사기"
   # OPA와 게이트웨이는 정책 파일을 기동할 때만 읽는다. 정책이 바뀐 판본에서도 반영되게 다시 만든다.
   dc up -d --force-recreate opa gateway
-  dc up -d db presidio-analyzer presidio-anonymizer agent-service intake-worker corp-git
+  dc up -d db presidio-analyzer presidio-anonymizer jaeger agent-service intake-worker corp-git
   # 실행기가 없는 판본으로 전환할 때 남아 있는 실행기와 그것이 띄운 MCP·망을 거둔다.
   # 이 기기의 Docker는 MINT 전용이라 실행기 라벨(mcpgw.runtime)로 찾는다.
   docker ps -aq --filter "label=com.docker.compose.project=$(project)" --filter "label=com.docker.compose.service=runtime-worker"     | xargs -r docker rm -f >/dev/null

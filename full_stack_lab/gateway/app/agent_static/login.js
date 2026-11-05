@@ -63,7 +63,7 @@ document.querySelector("#gate-form").addEventListener("submit", async (event) =>
     }
     localStorage.setItem(TOKEN_KEY, body.access_token);
     const next = new URLSearchParams(location.search).get("next") || "";
-    location.href = /^\/git\/[^/\\]/.test(next) || next === "/git/" ? next : "/workspace";
+    location.href = /^\/git\/[^/\\]/.test(next) || next === "/git/" || next === "/jaeger/" ? next : "/workspace";
   } catch {
     error.textContent = "인증 서비스에 연결할 수 없습니다. 잠시 후 다시 시도하세요.";
     error.focus();

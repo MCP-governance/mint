@@ -564,7 +564,7 @@ export const EN = {
   "상태 상세 확인": "Check status details",
   "구성 요소 확인 필요": "Components need attention",
   "구성 요소 정상": "Components healthy",
-  "추적 수집(선택)": "Tracing (optional)",
+  "추적 수집기": "Trace collector",
   "무효 처리": "Voided",
   "연결": "Connection",
   "정책 판정": "Policy decision",

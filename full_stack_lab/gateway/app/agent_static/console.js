@@ -640,7 +640,7 @@ function componentHealth(health) {
   if (health.status !== "ok" && !issues.length && health.components.jaeger !== false) issues.push("상태 상세 확인");
   const tracingIssue = health.components.jaeger === false;
   return html`${chip(issues.length ? "alert" : "allow", issues.length ? "구성 요소 확인 필요" : "구성 요소 정상")}
-    ${issues.length || tracingIssue ? html`<span class="health-detail">${[...issues, ...(tracingIssue ? ["추적 수집(선택)"] : [])].join(", ")}</span>` : ""}`;
+    ${issues.length || tracingIssue ? html`<span class="health-detail">${[...issues, ...(tracingIssue ? ["추적 수집기"] : [])].join(", ")}</span>` : ""}`;
 }
 
 const decisionReason = (r) => ({ "P-RATE-003": "중복 호출 차단", "P-CONSENT-001": "이용 동의 필요" }[r.policy_id]
@@ -1225,7 +1225,9 @@ async function showDecision(id) {
       ["오류", r.error]])}<details><summary>추적 정보</summary>${kv([
       ["응답 해시", r.response_sha256 ? html`<code>${r.response_sha256}</code>` : ""],
       ["감사 해시", r.evidence_sha256 ? html`<code>${r.evidence_sha256}</code>` : ""],
-      ["추적 ID", r.trace_id ? html`<code>${r.trace_id}</code>` : ""], ["추적 문맥", r.traceparent ? html`<code>${r.traceparent}</code>` : ""],
+      ["추적 ID", r.trace_id ? (viewer.admin && /^[0-9a-f]{32}$/.test(r.trace_id)
+        ? html`<a href="/jaeger/trace/${r.trace_id}" target="_blank" rel="noopener"><code>${r.trace_id}</code></a>`
+        : html`<code>${r.trace_id}</code>`) : ""], ["추적 문맥", r.traceparent ? html`<code>${r.traceparent}</code>` : ""],
       ["작업 ID", r.task_id]])}</details>` },
     { key: "timing", label: "처리 시간", body: timingView(r.timings) },
     ...(viewer.admin ? [{ key: "related", label: "연관 이벤트", n: related ? related.records.length : undefined, body: relatedBody(related) }] : []),
