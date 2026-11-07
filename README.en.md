@@ -15,12 +15,12 @@ MCP Governance Gateway
 
 </div>
 
-MINT is a governance solution that manages the MCP servers a company connects to its AI coding agents, from onboarding to disposal.
-It reviews and approves the MCP servers employees request, applies them to the connection settings on employee PCs, and decides and records every tool call before it runs.
+MINT is a governance solution that manages MCP servers for AI agents within a company, from onboarding to disposal.
+After reviewing and approving the MCP servers employees request, it applies them to the connection settings on employee PCs, and decides on and records every tool call before it runs.
 When use ends, MINT blocks the connection and keeps the credential revocation results together with their evidence.
 
-The goal is for security teams to see who uses which MCP server for what purpose in one console, and for employees to use approved MCP servers right away without extra setup.
-MINT currently supports Claude Code and Codex CLI.
+Security teams can see in the console who uses which MCP server for what purpose, and employees can use approved MCP servers right away without extra setup.
+MINT currently supports only Claude Code and Codex CLI.
 
 <p align="center">
   <img src="assets/architecture.png" alt="MINT overall architecture" width="100%">
@@ -43,10 +43,10 @@ MINT supports MCP servers in the order they are used, from the onboarding reques
 ### 1. MCP onboarding request and approval
 
 Employees request the MCP server they need on the Onboarding screen of the console, stating the purpose and the data classification involved.
-For a remote MCP server, MINT summarizes the tools it provides and their terms of use in a report. For an MCP server delivered as source code, the report contains the supply-chain check results for a pinned version.
+In the case of a remote MCP server, MINT summarizes the tools it provides and their terms of use in a report. In the case of an MCP server delivered as source code, the report contains the supply-chain check results for a pinned version.
 
 Administrators review the report and approve it, setting which tools may be used, by whom, and until when.
-By default, an administrator other than the requester approves, so no single person both requests and approves.
+By default, an administrator who is not the requester approves, so no single person both requests and approves.
 
 <p align="center">
   <img src="assets/screenshots/onboarding-light.jpg" alt="MCP onboarding request screen" width="90%">
@@ -58,26 +58,26 @@ Approved MCP servers are applied to the managed settings of Claude Code and Code
 Employees do not need to enter MCP server addresses or credentials themselves. The gateway keeps the credentials needed for each MCP server separately and does not hand them to employees.
 
 Administrators can change who may use each MCP server, or suspend it immediately, on the AI connection management screen.
-On Windows and Linux, employees can run the `mint` command in a new terminal to check the connection status, the MCP servers available to them, and their own call records, and to request a new MCP server.
+On Windows and Linux, employees can use the `mint` command in a terminal to check the connection status, the MCP servers available to them, and their own call records, and to request a new MCP server.
 
 ### 3. Tool usage consent
 
 For tools that require consent, employees review the purpose, the information they will enter, and the external destinations that information goes to before first use, and then decide whether to consent.
-Consents and their expiry dates can be reviewed and withdrawn on the Tool usage consent screen. Calls after withdrawal are blocked, but calls that have already run are not undone.
+Consents and their expiry dates can be reviewed and changed on the Tool usage consent screen.
 
 ### 4. Call decisions and response protection
 
-Every tool call that passes through the gateway is checked before it runs against the user, the tool type, the input, organization policy, and usage consent, and is decided as allow, alert, restrict, pending approval, or block.
+Every tool call that passes through the gateway is checked before it runs against the user, the tool type, the input, organization policy, and usage consent, and is decided as `allow`, `alert`, `restrict`, `pending approval`, or `block`.
 For calls pending approval, an administrator reviews the details on the Dashboard and decides whether to run them.
 
-When personal or secret information is found in a response, that part is masked before the response is returned. Responses that cannot be returned safely are withheld.
+When personal or secret information is found in a response, that part is masked before the response is returned. Responses that cannot be returned are withheld.
 If the checks before execution cannot be completed, the call is blocked. If the response check after execution cannot be completed, the response is withheld.
 
 ### 5. Call records and security monitoring
 
-Every decision and execution result is appended to the audit record. The audit record prevents ordinary edits and deletions, and changes to it can be detected.
-Employees can search their own calls and administrators can search all calls in the organization, viewing the policy decision, the actual execution, and the response handling separately. Administrators can export the results as audit evidence.
-Administrators can select the trace ID in a call's details to see, on the trace screen, each processing step the call went through in the gateway and how long each step took.
+Every decision and execution result is recorded in order in the audit record. The audit record prevents ordinary edits and deletions, and changes to it can be detected.
+Employees can search their own calls and administrators can search all calls in the organization, viewing the decision result, the tool actually executed, and the response handling separately. Administrators can export the results as audit evidence.
+Administrators can select the trace ID in a call's details to see each processing step the call went through in the gateway and how long each step took.
 
 The Security monitoring screen shows alerts, incident report evidence, and the status of the SIEM integration.
 When an unapproved MCP setting is found on an employee PC, an alert is raised, and the alert details link straight to the related screen.
@@ -88,8 +88,7 @@ When an unapproved MCP setting is found on an employee PC, an alert is raised, a
 
 ### 6. Termination and disposal
 
-To stop using an MCP server, select the usage relationship on the Termination and disposal screen and start termination.
-Calls to that MCP server are blocked as soon as termination starts, and the credentials and settings to revoke are listed.
+To stop using an MCP server, the Termination and disposal screen blocks calls to that MCP server and lists the credentials and settings to revoke.
 After completing revocation and collecting evidence, the administrator records the termination verdict and checks any remaining follow-up actions.
 
 See [Console screenshots (Korean)](docs/user-guide/screenshots.md) for the actual console screens.
